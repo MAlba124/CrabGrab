@@ -392,7 +392,7 @@ impl WaylandCaptureStream {
         let loop_ = mainloop.loop_();
 
         // Iterate the stream and check for errors while negotiating pixel format
-        // BUG: Does not exit when supported format is not found
+        // BUG: Does not exit when supported format is not found. Find out if it timed out
         while *(*format_negotiating).borrow() {
             loop_.iterate(Duration::from_millis(100));
             match stream.state() {
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_datas_extraction_header_cursor_bitmap() {
+    fn buffer_metas_extraction_header_cursor_bitmap() {
         let mut meta_header_data = spa_meta_header {
             flags: 1,
             offset: 2,
