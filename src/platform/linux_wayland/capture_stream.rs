@@ -120,6 +120,7 @@ struct WaylandCapturerUD {
     pub show_cursor_as_metadata: bool,
     pub start_time: i64,
     pub callback: Box<dyn FnMut(Result<StreamEvent, StreamError>) + Send + 'static>,
+    pub should_run: Arc<AtomicBool>,
 }
 
 pub struct WaylandCaptureStream {
@@ -188,6 +189,20 @@ impl WaylandCaptureStream {
             Fraction { num: 0, denom: 1 },
             Fraction { num: 512, denom: 1 }
         )
+    }
+
+    fn state_changed(_stream: &StreamRef, ud: &mut WaylandCapturerUD, _old: StreamState, new: StreamState) {
+        match new {
+            StreamState::Error(e) => {
+                (*ud.callback)(Err(StreamError::Other(e)));
+                ud.should_run.store(false, Ordering::SeqCst);
+            }
+            StreamState::Unconnected => {
+                (*ud.callback)(Ok(StreamEvent::End));
+                ud.should_run.store(false, Ordering::SeqCst);
+            }
+            _ => {}
+        }
     }
 
     fn param_changed(stream: &StreamRef, ud: &mut WaylandCapturerUD, id: u32, param: Option<&Pod>) {
@@ -370,10 +385,12 @@ impl WaylandCaptureStream {
                 },
             start_time: 0,
             callback,
+            should_run: Arc::clone(&should_run),
         };
 
         let _listener = stream
             .add_local_listener_with_user_data(user_data)
+            .state_changed(Self::state_changed)
             .param_changed(Self::param_changed)
             .process(Self::process)
             .register()
@@ -422,15 +439,12 @@ impl WaylandCaptureStream {
         let loop_ = mainloop.loop_();
 
         // Iterate the stream and check for errors while negotiating pixel format
-        // BUG: Does not exit when supported format is not found. Find out if it timed out
         while *(*format_negotiating).borrow() {
             loop_.iterate(Duration::from_millis(100));
-            match stream.state() {
-                StreamState::Error(_) => {
-                    return Err(StreamCreateError::UnsupportedPixelFormat);
-                }
-                _ => {}
-            }
+        }
+
+        if !should_run.load(Ordering::Acquire) {
+            return Err(StreamCreateError::UnsupportedPixelFormat);
         }
 
         init_tx.send(Ok(())).unwrap();
@@ -470,7 +484,7 @@ impl WaylandCaptureStream {
     pub(crate) fn stop(&mut self) -> Result<(), StreamStopError> {
         if self.should_run.load(Ordering::Acquire) {
             self.should_run
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+                .store(false, Ordering::SeqCst);
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
