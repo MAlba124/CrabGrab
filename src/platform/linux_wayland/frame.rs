@@ -1,10 +1,19 @@
+use pipewire::spa::param::video::VideoInfoRaw;
+
 use crate::prelude::VideoCaptureFrame;
 
-pub(crate) struct WaylandVideoFrame {}
+pub(crate) struct WaylandVideoFrame {
+    pub(crate) size: crate::prelude::Size,
+    pub(crate) id: u64,
+    pub(crate) captured: std::time::Instant,
+    pub(crate) pts: std::time::Duration,
+    pub(crate) format: VideoInfoRaw,
+    pub(crate) data: Vec<u8>, // TODO: Optimize
+}
 
 impl VideoCaptureFrame for WaylandVideoFrame {
     fn size(&self) -> crate::prelude::Size {
-        todo!()
+        self.size
     }
 
     fn dpi(&self) -> f64 {
@@ -12,19 +21,19 @@ impl VideoCaptureFrame for WaylandVideoFrame {
     }
 
     fn duration(&self) -> std::time::Duration {
-        todo!()
+        std::time::Duration::from_secs(0)
     }
 
     fn origin_time(&self) -> std::time::Duration {
-        todo!()
+        self.pts
     }
 
     fn capture_time(&self) -> std::time::Instant {
-        todo!()
+        self.captured
     }
 
     fn frame_id(&self) -> u64 {
-        todo!()
+        self.id
     }
 
     fn content_rect(&self) -> crate::prelude::Rect {

@@ -25,8 +25,8 @@ use pipewire::{
         },
         pod::{self, Pod, Property},
         sys::{
-            spa_buffer, spa_meta_bitmap, spa_meta_cursor, spa_meta_header, spa_meta_region,
-            SPA_META_Bitmap, SPA_META_Cursor, SPA_META_Header, SPA_META_VideoCrop,
+            spa_buffer, spa_meta_bitmap, spa_meta_cursor, spa_meta_header,
+            SPA_META_Bitmap, SPA_META_Cursor, SPA_META_Header,
             SPA_PARAM_META_size, SPA_PARAM_META_type,
         },
         utils::{Direction, Fraction, Rectangle, SpaTypes},
@@ -34,9 +34,15 @@ use pipewire::{
     stream::{Stream, StreamFlags, StreamRef, StreamState},
 };
 
-use crate::prelude::{
-    CaptureConfig, CapturePixelFormat, StreamCreateError, StreamError, StreamEvent, StreamStopError,
+use crate::{
+    frame::VideoFrame,
+    prelude::{
+        CaptureConfig, CapturePixelFormat, StreamCreateError, StreamError, StreamEvent,
+        StreamStopError,
+    },
 };
+
+use super::frame::WaylandVideoFrame;
 
 #[derive(Default, Debug, PartialEq)]
 struct PwMetas<'a> {
@@ -112,6 +118,8 @@ struct WaylandCapturerUD {
     pub format: VideoInfoRaw,
     pub format_negotiating: Rc<RefCell<bool>>,
     pub show_cursor_as_metadata: bool,
+    pub start_time: i64,
+    pub callback: Box<dyn FnMut(Result<StreamEvent, StreamError>) + Send + 'static>,
 }
 
 pub struct WaylandCaptureStream {
@@ -272,7 +280,7 @@ impl WaylandCaptureStream {
         }
 
         ud.format.parse(param).unwrap();
-        println!(
+        println!( // DEBUGGING
             "Got pixel format: {} ({:?})",
             ud.format.format().as_raw(),
             ud.format.format()
@@ -281,7 +289,7 @@ impl WaylandCaptureStream {
         ud.format_negotiating.replace(false);
     }
 
-    fn process(stream: &StreamRef, _ud: &mut WaylandCapturerUD) {
+    fn process(stream: &StreamRef, ud: &mut WaylandCapturerUD) {
         let raw_buffer = unsafe { stream.dequeue_raw_buffer() };
         if raw_buffer.is_null() {
             unsafe { stream.queue_raw_buffer(raw_buffer) };
@@ -296,7 +304,27 @@ impl WaylandCaptureStream {
 
         let metas = PwMetas::from_raw(&buffer);
         let datas = PwDatas::from_raw(&buffer);
-        println!("n_datas: {}", datas.len());
+        if let (Some(header), Some(data)) = (metas.header, datas.iter().next()) {
+            if ud.start_time == 0 {
+                ud.start_time = header.pts;
+            }
+
+            let frame = WaylandVideoFrame {
+                size: crate::prelude::Size {
+                    width: ud.format.size().width as f64,
+                    height: ud.format.size().height as f64,
+                },
+                id: header.seq,
+                captured: std::time::Instant::now(),
+                pts: std::time::Duration::from_nanos((header.pts - ud.start_time) as u64),
+                format: ud.format,
+                data: data.data.to_vec(),
+            };
+
+            (*ud.callback)(Ok(StreamEvent::Video(VideoFrame {
+                impl_video_frame: frame,
+            })));
+        }
 
         unsafe { stream.queue_raw_buffer(raw_buffer) };
     }
@@ -340,6 +368,8 @@ impl WaylandCaptureStream {
                         d.impl_capturable_display.cursor_as_metadata
                     }
                 },
+            start_time: 0,
+            callback,
         };
 
         let _listener = stream
@@ -464,6 +494,7 @@ impl WaylandCaptureConfig {
     }
 }
 
+#[allow(dead_code)]
 pub struct WaylandPixelFormat {}
 
 #[derive(Clone, Copy, Debug)]
@@ -507,7 +538,11 @@ mod tests {
         let extracted_metas = PwMetas::from_raw(&buffer_addr);
         assert_eq!(
             extracted_metas,
-            PwMetas { header: Some(&meta_header_data), cursor: None, bitmap: None }
+            PwMetas {
+                header: Some(&meta_header_data),
+                cursor: None,
+                bitmap: None
+            }
         );
     }
 
@@ -529,7 +564,10 @@ mod tests {
         };
         let mut meta_bitmap_data = spa_meta_bitmap {
             format: 0,
-            size: spa::sys::spa_rectangle { width: 0, height: 0 },
+            size: spa::sys::spa_rectangle {
+                width: 0,
+                height: 0,
+            },
             stride: 0,
             offset: 5,
         };
@@ -548,7 +586,7 @@ mod tests {
                 type_: SPA_META_Bitmap,
                 size: std::mem::size_of_val(&meta_bitmap_data) as u32,
                 data: std::ptr::addr_of_mut!(meta_bitmap_data) as *mut c_void,
-            }
+            },
         ];
         let mut buffer = spa_buffer {
             n_metas: metas.len() as u32,
@@ -560,7 +598,11 @@ mod tests {
         let extracted_metas = PwMetas::from_raw(&buffer_addr);
         assert_eq!(
             extracted_metas,
-            PwMetas { header: Some(&meta_header_data), cursor: Some(&meta_cursor_data), bitmap: Some(&meta_bitmap_data) }
+            PwMetas {
+                header: Some(&meta_header_data),
+                cursor: Some(&meta_cursor_data),
+                bitmap: Some(&meta_bitmap_data)
+            }
         );
     }
 }

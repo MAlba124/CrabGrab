@@ -5,6 +5,7 @@ mod capture_content;
 pub(crate) use capture_stream::WaylandCaptureAccessToken as ImplCaptureAccessToken;
 pub(crate) use capture_stream::WaylandCaptureConfig as ImplCaptureConfig;
 pub(crate) use capture_stream::WaylandCaptureStream as ImplCaptureStream;
+#[allow(unused_imports)]
 pub(crate) use capture_stream::WaylandPixelFormat as ImplPixelFormat;
 
 pub(crate) use frame::WaylandVideoFrame as ImplVideoFrame;
