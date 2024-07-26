@@ -115,11 +115,11 @@ impl WaylandCapturableContent {
     fn source_types_filter(filter: CapturableContentFilter) -> BitFlags<SourceType> {
         let mut bitflags = BitFlags::empty();
         if filter.displays {
-            bitflags |= SourceType::Monitor;
+            bitflags |= SourceType::Monitor | SourceType::Virtual;
         }
         if let Some(windows_filter) = filter.windows {
             if windows_filter.desktop_windows || windows_filter.onscreen_only {
-                bitflags |= SourceType::Window | SourceType::Virtual;
+                bitflags |= SourceType::Window;
             }
         }
         bitflags
@@ -136,6 +136,10 @@ impl WaylandCapturableContent {
             .map_err(|e| CapturableContentError::Other(e.to_string()))?
             .contains(CursorMode::Metadata);
 
+        let source_types = Self::source_types_filter(filter)
+            // Some portal implementations freak out when we include supported an not supported source types
+            & screencast.available_source_types().await.map_err(|e| CapturableContentError::Other(e.to_string()))?;
+
         let session = screencast
             .create_session()
             .await
@@ -144,13 +148,13 @@ impl WaylandCapturableContent {
         screencast
             .select_sources(
                 &session,
-                // TODO: Show cursor as default when metadata-mode is not available?
+                // INVESTIGATE: Show cursor as default when metadata-mode is not available?
                 if cursor_as_metadata {
                     CursorMode::Metadata
                 } else {
                     CursorMode::Embedded
                 },
-                Self::source_types_filter(filter),
+                source_types,
                 false,
                 None,
                 ashpd::desktop::PersistMode::DoNot,
@@ -235,7 +239,7 @@ mod tests {
 
     use crate::{
         platform::platform_impl::{
-            wayland::capture_content::WaylandCapturableContent, ImplCapturableContentFilter,
+            capture_content::WaylandCapturableContent, ImplCapturableContentFilter,
         },
         prelude::{CapturableContentFilter, CapturableWindowFilter},
     };
@@ -248,7 +252,7 @@ mod tests {
                 displays: true,
                 impl_capturable_content_filter: ImplCapturableContentFilter::default(),
             }),
-            SourceType::Monitor
+            SourceType::Monitor | SourceType::Virtual
         );
     }
 
@@ -263,7 +267,7 @@ mod tests {
                 displays: false,
                 impl_capturable_content_filter: ImplCapturableContentFilter::default(),
             }),
-            SourceType::Window | SourceType::Virtual
+            SourceType::Window
         );
         assert_eq!(
             WaylandCapturableContent::source_types_filter(CapturableContentFilter {
@@ -274,7 +278,7 @@ mod tests {
                 displays: false,
                 impl_capturable_content_filter: ImplCapturableContentFilter::default(),
             }),
-            SourceType::Window | SourceType::Virtual
+            SourceType::Window
         );
         assert_eq!(
             WaylandCapturableContent::source_types_filter(CapturableContentFilter {
@@ -285,7 +289,7 @@ mod tests {
                 displays: false,
                 impl_capturable_content_filter: ImplCapturableContentFilter::default(),
             }),
-            SourceType::Window | SourceType::Virtual
+            SourceType::Window
         );
     }
 
@@ -298,6 +302,21 @@ mod tests {
                 impl_capturable_content_filter: ImplCapturableContentFilter::default(),
             }),
             BitFlags::empty()
+        );
+    }
+
+    #[test]
+    fn source_type_filter_conversion_all() {
+        assert_eq!(
+            WaylandCapturableContent::source_types_filter(CapturableContentFilter {
+                windows: Some(CapturableWindowFilter {
+                    desktop_windows: true,
+                    onscreen_only: true
+                }),
+                displays: true,
+                impl_capturable_content_filter: ImplCapturableContentFilter::default(),
+            }),
+            SourceType::Monitor | SourceType::Virtual | SourceType::Window
         );
     }
 }
