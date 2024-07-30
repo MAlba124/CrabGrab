@@ -1,6 +1,6 @@
+mod capture_content;
 mod capture_stream;
 mod frame;
-mod capture_content;
 
 pub(crate) use capture_stream::WaylandCaptureAccessToken as ImplCaptureAccessToken;
 pub(crate) use capture_stream::WaylandCaptureConfig as ImplCaptureConfig;
@@ -15,7 +15,6 @@ pub(crate) use capture_content::WaylandCapturableContent as ImplCapturableConten
 pub(crate) use capture_content::WaylandCapturableContentFilter as ImplCapturableContentFilter;
 pub(crate) use capture_content::WaylandCapturableDisplay as ImplCapturableDisplay;
 pub(crate) use capture_content::WaylandCapturableWindow as ImplCapturableWindow;
-
 
 #[derive(Clone, Debug)]
 pub(crate) struct ImplAudioCaptureConfig {}

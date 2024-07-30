@@ -140,20 +140,28 @@ impl WaylandCapturableContent {
             // Some portal implementations freak out when we include supported an not supported source types
             & screencast.available_source_types().await.map_err(|e| CapturableContentError::Other(e.to_string()))?;
 
+        if source_types.is_empty() {
+            return Err(CapturableContentError::Other(
+                "Unsupported content filter".to_string(),
+            ));
+        }
+
         let session = screencast
             .create_session()
             .await
             .map_err(|e| CapturableContentError::Other(e.to_string()))?;
 
+        // INVESTIGATE: Show cursor as default when metadata-mode is not available?
+        let cursor_mode = if cursor_as_metadata {
+            CursorMode::Metadata
+        } else {
+            CursorMode::Embedded
+        };
+
         screencast
             .select_sources(
                 &session,
-                // INVESTIGATE: Show cursor as default when metadata-mode is not available?
-                if cursor_as_metadata {
-                    CursorMode::Metadata
-                } else {
-                    CursorMode::Embedded
-                },
+                cursor_mode,
                 source_types,
                 false,
                 None,
@@ -184,16 +192,8 @@ impl WaylandCapturableContent {
                             pw_node_id: stream.pipe_wire_node_id(),
                             position: stream.position(),
                             size: stream.size(),
-                            id: if let Some(id) = stream.id() {
-                                Some(id.to_string())
-                            } else {
-                                None
-                            },
-                            mapping_id: if let Some(id) = stream.mapping_id() {
-                                Some(id.to_string())
-                            } else {
-                                None
-                            },
+                            id: stream.id().map(|id| id.to_string()),
+                            mapping_id: stream.mapping_id().map(|id| id.to_string()),
                             virt: source_type == SourceType::Virtual,
                             cursor_as_metadata,
                         });
@@ -207,16 +207,8 @@ impl WaylandCapturableContent {
                 pw_node_id: stream.pipe_wire_node_id(),
                 position: stream.position(),
                 size: stream.size(),
-                id: if let Some(id) = stream.id() {
-                    Some(id.to_string())
-                } else {
-                    None
-                },
-                mapping_id: if let Some(id) = stream.mapping_id() {
-                    Some(id.to_string())
-                } else {
-                    None
-                },
+                id: stream.id().map(|id| id.to_string()),
+                mapping_id: stream.mapping_id().map(|id| id.to_string()),
                 cursor_as_metadata,
             });
         }

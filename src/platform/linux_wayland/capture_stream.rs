@@ -23,13 +23,12 @@ use pipewire::{
             video::{VideoFormat, VideoInfoRaw},
             ParamType,
         },
-        pod::{self, Pod, Property},
+        pod::{self, Object, Pod, Property},
         sys::{
-            spa_buffer, spa_meta_bitmap, spa_meta_cursor, spa_meta_header,
-            SPA_META_Bitmap, SPA_META_Cursor, SPA_META_Header,
-            SPA_PARAM_META_size, SPA_PARAM_META_type,
+            spa_buffer, spa_meta_bitmap, spa_meta_cursor, spa_meta_header, SPA_META_Cursor,
+            SPA_META_Header, SPA_PARAM_META_size, SPA_PARAM_META_type, SPA_LOG_LEVEL_TRACE,
         },
-        utils::{Direction, Fraction, Rectangle, SpaTypes},
+        utils::{ChoiceFlags, Direction, Fraction, Rectangle, SpaTypes},
     },
     stream::{Stream, StreamFlags, StreamRef, StreamState},
 };
@@ -44,39 +43,79 @@ use crate::{
 
 use super::frame::WaylandVideoFrame;
 
+const INVALID_CURSOR_ID: u32 = 0;
+
+macro_rules! cursor_metadata_size {
+    ($w:expr, $h:expr) => {
+        (size_of::<spa_meta_cursor>() + size_of::<spa_meta_bitmap>() + $w * $h * 4) as i32
+    };
+}
+
+fn serialize_pod_object(obj: Object) -> Result<Vec<u8>, StreamCreateError> {
+    let vals: Vec<u8> = pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &pod::Value::Object(obj),
+    )
+    .map_err(|e| StreamCreateError::Other(e.to_string()))?
+    .0
+    .into_inner();
+
+    Ok(vals)
+}
+
+#[derive(Debug, PartialEq)]
+struct CursorBitmap {
+    pub format: VideoFormat,
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_pixel: usize,
+}
+
 #[derive(Default, Debug, PartialEq)]
 struct PwMetas<'a> {
     pub header: Option<&'a spa_meta_header>,
     pub cursor: Option<&'a spa_meta_cursor>,
-    // TODO: Get the bitmap: https://docs.pipewire.org/video-play_8c-example.html#_a30
-    pub bitmap: Option<&'a spa_meta_bitmap>,
+    pub cursor_bitmap: Option<CursorBitmap>,
 }
 
 impl<'a> PwMetas<'a> {
-    pub fn from_raw(raw: &'a *mut spa_buffer) -> Self {
-        let mut self_ = Self::default();
-
-        unsafe {
-            let n_metas = (*(*raw)).n_metas;
-            if n_metas == 0 {
-                return self_;
-            }
-
-            let mut meta_ptr = (*(*raw)).metas;
-            let metas_end = (*(*raw)).metas.wrapping_add(n_metas as usize);
-            while meta_ptr != metas_end {
-                if (*meta_ptr).type_ == SPA_META_Header {
-                    self_.header = Some(&mut *((*meta_ptr).data as *mut spa_meta_header));
-                } else if (*meta_ptr).type_ == SPA_META_Cursor {
-                    self_.cursor = Some(&mut *((*meta_ptr).data as *mut spa_meta_cursor));
-                } else if (*meta_ptr).type_ == SPA_META_Bitmap {
-                    self_.bitmap = Some(&mut *((*meta_ptr).data as *mut spa_meta_bitmap))
+    pub unsafe fn from_raw(raw: &'a *mut spa_buffer) -> Self {
+        let mut metas = Self::default();
+        for meta in std::slice::from_raw_parts((*(*raw)).metas, (*(*raw)).n_metas as usize) {
+            match meta.type_ {
+                #[allow(non_upper_case_globals)]
+                SPA_META_Header => {
+                    metas.header = Some(&*(meta.data as *const spa_meta_header));
                 }
-                meta_ptr = meta_ptr.wrapping_add(1);
+                #[allow(non_upper_case_globals)]
+                SPA_META_Cursor => {
+                    let cursor = &*(meta.data as *const spa_meta_cursor);
+                    // Cursor bitmap are only sent when the cursor sprite is different from the previous
+                    if cursor.id != INVALID_CURSOR_ID && cursor.bitmap_offset > 0 {
+                        let bitmap = (cursor as *const spa_meta_cursor)
+                            .byte_offset(cursor.bitmap_offset as isize)
+                            as *const spa_meta_bitmap;
+                        let bitmap_data = std::slice::from_raw_parts(
+                            (bitmap as *const u8).byte_offset((*bitmap).offset as isize),
+                            (*bitmap).size.height as usize * (*bitmap).stride as usize,
+                        );
+                        metas.cursor_bitmap = Some(CursorBitmap {
+                            format: param::video::VideoFormat((*bitmap).format),
+                            data: bitmap_data.to_vec(),
+                            width: (*bitmap).size.width,
+                            height: (*bitmap).size.height,
+                            bytes_per_pixel: (*bitmap).stride as usize / (*bitmap).size.width as usize,
+                        });
+                    }
+
+                    metas.cursor = Some(cursor);
+                }
+                _ => {}
             }
         }
 
-        self_
+        metas
     }
 }
 
@@ -86,31 +125,13 @@ struct PwDatas<'a> {
 }
 
 impl<'a> PwDatas<'a> {
-    pub fn from_raw(raw: &'a *mut spa_buffer) -> Vec<PwDatas<'a>> {
-        let mut datas = Vec::new();
-
-        unsafe {
-            let n_datas = (*(*raw)).n_datas;
-            if n_datas == 0 {
-                return datas;
-            }
-
-            let mut data_ptr = (*(*raw)).datas;
-            let datas_end = (*(*raw)).datas.wrapping_add(n_datas as usize);
-            while data_ptr != datas_end {
-                if !(*data_ptr).data.is_null() {
-                    datas.push(PwDatas {
-                        data: std::slice::from_raw_parts(
-                            (*data_ptr).data as *mut u8,
-                            (*data_ptr).maxsize as usize,
-                        ),
-                    });
-                }
-                data_ptr = data_ptr.wrapping_add(1);
-            }
-        }
-
-        datas
+    pub unsafe fn from_raw(raw: &'a *mut spa_buffer) -> Vec<PwDatas<'a>> {
+        std::slice::from_raw_parts((*(*raw)).datas, (*(*raw)).n_datas as usize)
+            .iter()
+            .map(|data| PwDatas {
+                data: std::slice::from_raw_parts(data.data as *mut u8, data.maxsize as usize),
+            })
+            .collect::<Vec<PwDatas<'a>>>()
     }
 }
 
@@ -121,6 +142,7 @@ struct WaylandCapturerUD {
     pub start_time: i64,
     pub callback: Box<dyn FnMut(Result<StreamEvent, StreamError>) + Send + 'static>,
     pub should_run: Arc<AtomicBool>,
+    pub cursor_bitmap: Option<CursorBitmap>,
 }
 
 pub struct WaylandCaptureStream {
@@ -142,19 +164,17 @@ impl WaylandCaptureStream {
     }
 
     fn pod_supported_pixel_formats() -> pod::Property {
-        pipewire::spa::pod::property!(
+        pod::property!(
             format::FormatProperties::VideoFormat,
             Choice,
             Enum,
             Id,
-            VideoFormat::RGBA, // Big-endian
-            VideoFormat::RGBx, // Big-endian
             VideoFormat::BGRx, // Big-endian
             VideoFormat::BGRA, // Big-endian
+            VideoFormat::RGBA, // Big-endian
+            VideoFormat::RGBx, // Big-endian
             VideoFormat::ABGR, // Big-endian
             VideoFormat::ARGB, // Big-endian
-            VideoFormat::xRGB, // Big-endian
-            VideoFormat::xBGR  // Big-endian
         )
     }
 
@@ -191,7 +211,12 @@ impl WaylandCaptureStream {
         )
     }
 
-    fn state_changed(_stream: &StreamRef, ud: &mut WaylandCapturerUD, _old: StreamState, new: StreamState) {
+    fn state_changed(
+        _stream: &StreamRef,
+        ud: &mut WaylandCapturerUD,
+        _old: StreamState,
+        new: StreamState,
+    ) {
         match new {
             StreamState::Error(e) => {
                 (*ud.callback)(Err(StreamError::Other(e)));
@@ -233,55 +258,44 @@ impl WaylandCaptureStream {
             }
         };
 
-        let metas_obj = if ud.show_cursor_as_metadata {
-            pod::object!(
-                SpaTypes::ObjectParamMeta,
-                ParamType::Meta,
-                Property::new(
-                    SPA_PARAM_META_type,
-                    pod::Value::Id(spa::utils::Id(SPA_META_Header))
-                ),
-                Property::new(
-                    SPA_PARAM_META_type,
-                    pod::Value::Id(spa::utils::Id(SPA_META_Cursor))
-                ),
-                Property::new(
-                    SPA_PARAM_META_type,
-                    pod::Value::Id(spa::utils::Id(SPA_META_Bitmap))
-                ),
-                Property::new(
-                    SPA_PARAM_META_size,
-                    pod::Value::Int(
-                        size_of::<spa::sys::spa_meta_header>() as i32
-                            + size_of::<spa::sys::spa_meta_cursor>() as i32
-                            + size_of::<spa::sys::spa_meta_bitmap>() as i32
-                    )
-                ),
-            )
-        } else {
-            pod::object!(
-                SpaTypes::ObjectParamMeta,
-                ParamType::Meta,
-                Property::new(
-                    SPA_PARAM_META_type,
-                    pod::Value::Id(spa::utils::Id(SPA_META_Header))
-                ),
-                Property::new(
-                    SPA_PARAM_META_size,
-                    pod::Value::Int(size_of::<spa::sys::spa_meta_header>() as i32)
-                ),
-            )
-        };
+        let mut params = Vec::new();
 
-        let metas_values: Vec<u8> = pod::serialize::PodSerializer::serialize(
-            std::io::Cursor::new(Vec::new()),
-            &pod::Value::Object(metas_obj),
-        )
-        .unwrap()
-        .0
-        .into_inner();
+        let mcursor_obj = pod::object!(
+            SpaTypes::ObjectParamMeta,
+            ParamType::Meta,
+            Property::new(
+                SPA_PARAM_META_type,
+                pod::Value::Id(spa::utils::Id(SPA_META_Cursor))
+            ),
+            Property::new(
+                SPA_PARAM_META_size,
+                pod::Value::Choice(pod::ChoiceValue::Int(spa::utils::Choice::<i32>(
+                    ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Range {
+                        default: cursor_metadata_size!(64, 64),
+                        min: cursor_metadata_size!(1, 1),
+                        max: cursor_metadata_size!(512, 512)
+                    }
+                )))
+            )
+        );
+        let mcursor_values = serialize_pod_object(mcursor_obj).unwrap();
+        params.push(pod::Pod::from_bytes(&mcursor_values).unwrap());
 
-        let mut params = [pod::Pod::from_bytes(&metas_values).unwrap()];
+        let mheader_obj = pod::object!(
+            SpaTypes::ObjectParamMeta,
+            ParamType::Meta,
+            Property::new(
+                SPA_PARAM_META_type,
+                pod::Value::Id(spa::utils::Id(SPA_META_Header))
+            ),
+            Property::new(
+                SPA_PARAM_META_size,
+                pod::Value::Int(size_of::<spa::sys::spa_meta_header>() as i32)
+            ),
+        );
+        let mheader_values = serialize_pod_object(mheader_obj).unwrap();
+        params.push(pod::Pod::from_bytes(&mheader_values).unwrap());
 
         if let Err(e) = stream.update_params(&mut params) {
             unsafe {
@@ -295,7 +309,8 @@ impl WaylandCaptureStream {
         }
 
         ud.format.parse(param).unwrap();
-        println!( // DEBUGGING
+        println!(
+            // DEBUGGING
             "Got pixel format: {} ({:?})",
             ud.format.format().as_raw(),
             ud.format.format()
@@ -317,11 +332,47 @@ impl WaylandCaptureStream {
             return;
         }
 
-        let metas = PwMetas::from_raw(&buffer);
-        let datas = PwDatas::from_raw(&buffer);
-        if let (Some(header), Some(data)) = (metas.header, datas.iter().next()) {
+        let (metas, datas) = unsafe { (PwMetas::from_raw(&buffer), PwDatas::from_raw(&buffer)) };
+        if let (Some(header), Some(data)) = (metas.header, datas.first()) {
             if ud.start_time == 0 {
                 ud.start_time = header.pts;
+            }
+
+            if metas.cursor_bitmap.is_some() {
+                ud.cursor_bitmap = metas.cursor_bitmap;
+            }
+
+            let mut pixel_data = data.data.to_vec();
+            'out: {
+                if ud.show_cursor_as_metadata {
+                    if let (Some(cursor), Some(bitmap)) = (metas.cursor, ud.cursor_bitmap.as_ref())
+                    {
+                        if bitmap.format == ud.format.format() {
+                            // TODO: conversion
+                            break 'out;
+                        }
+
+                        let mut bmap_iter = bitmap.data.iter();
+                        // TODO: Accelerate this
+                        for h in cursor.position.y as u32
+                            ..std::cmp::min(
+                                cursor.position.y as u32 + bitmap.height,
+                                ud.format.size().height,
+                            )
+                        {
+                            for w in cursor.position.x as usize
+                                ..std::cmp::min(
+                                    cursor.position.x as usize + bitmap.width as usize,
+                                    ud.format.size().width as usize,
+                                )
+                            {
+                                for i in 0..bitmap.bytes_per_pixel {
+                                    pixel_data[h as usize * w + i] = *bmap_iter.next().unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             let frame = WaylandVideoFrame {
@@ -333,7 +384,7 @@ impl WaylandCaptureStream {
                 captured: std::time::Instant::now(),
                 pts: std::time::Duration::from_nanos((header.pts - ud.start_time) as u64),
                 format: ud.format,
-                data: data.data.to_vec(),
+                data: pixel_data,
             };
 
             (*ud.callback)(Ok(StreamEvent::Video(VideoFrame {
@@ -351,6 +402,11 @@ impl WaylandCaptureStream {
         init_tx: &Sender<Result<(), StreamCreateError>>,
     ) -> Result<(), StreamCreateError> {
         pipewire::init();
+        unsafe {
+            // DEBUGGING
+            pipewire::sys::pw_log_set_level(SPA_LOG_LEVEL_TRACE);
+        }
+
         let mainloop = MainLoop::new(None).map_err(|e| StreamCreateError::Other(e.to_string()))?;
         let context =
             Context::new(&mainloop).map_err(|e| StreamCreateError::Other(e.to_string()))?;
@@ -386,6 +442,7 @@ impl WaylandCaptureStream {
             start_time: 0,
             callback,
             should_run: Arc::clone(&should_run),
+            cursor_bitmap: None,
         };
 
         let _listener = stream
@@ -414,15 +471,8 @@ impl WaylandCaptureStream {
             Self::pod_supported_framerates(),
         );
 
-        let stream_param_obj_values: Vec<u8> = pod::serialize::PodSerializer::serialize(
-            std::io::Cursor::new(Vec::new()),
-            &pod::Value::Object(stream_param_obj),
-        )
-        .map_err(|e| StreamCreateError::Other(e.to_string()))?
-        .0
-        .into_inner();
-
-        let mut params = [pod::Pod::from_bytes(&stream_param_obj_values).unwrap()];
+        let param_obj_values = serialize_pod_object(stream_param_obj)?;
+        let mut params = [pod::Pod::from_bytes(&param_obj_values).unwrap()];
 
         stream
             .connect(
@@ -483,8 +533,7 @@ impl WaylandCaptureStream {
 
     pub(crate) fn stop(&mut self) -> Result<(), StreamStopError> {
         if self.should_run.load(Ordering::Acquire) {
-            self.should_run
-                .store(false, Ordering::SeqCst);
+            self.should_run.store(false, Ordering::SeqCst);
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -539,7 +588,7 @@ mod tests {
         };
         let mut metas = [spa_meta {
             type_: SPA_META_Header,
-            size: std::mem::size_of_val(&meta_header_data) as u32,
+            size: size_of_val(&meta_header_data) as u32,
             data: std::ptr::addr_of_mut!(meta_header_data) as *mut c_void,
         }];
         let mut buffer = spa_buffer {
@@ -549,19 +598,19 @@ mod tests {
             datas: std::ptr::null_mut(),
         };
         let buffer_addr = std::ptr::addr_of_mut!(buffer);
-        let extracted_metas = PwMetas::from_raw(&buffer_addr);
+        let extracted_metas = unsafe { PwMetas::from_raw(&buffer_addr) };
         assert_eq!(
             extracted_metas,
             PwMetas {
                 header: Some(&meta_header_data),
                 cursor: None,
-                bitmap: None
+                cursor_bitmap: None
             }
         );
     }
 
     #[test]
-    fn buffer_metas_extraction_header_cursor_bitmap() {
+    fn buffer_metas_extraction_header_cursor() {
         let mut meta_header_data = spa_meta_header {
             flags: 1,
             offset: 2,
@@ -576,30 +625,16 @@ mod tests {
             hotspot: spa::sys::spa_point { x: 20, y: 22 },
             bitmap_offset: 321,
         };
-        let mut meta_bitmap_data = spa_meta_bitmap {
-            format: 0,
-            size: spa::sys::spa_rectangle {
-                width: 0,
-                height: 0,
-            },
-            stride: 0,
-            offset: 5,
-        };
         let mut metas = [
             spa_meta {
                 type_: SPA_META_Header,
-                size: std::mem::size_of_val(&meta_header_data) as u32,
+                size: size_of_val(&meta_header_data) as u32,
                 data: std::ptr::addr_of_mut!(meta_header_data) as *mut c_void,
             },
             spa_meta {
                 type_: SPA_META_Cursor,
-                size: std::mem::size_of_val(&meta_cursor_data) as u32,
+                size: size_of_val(&meta_cursor_data) as u32,
                 data: std::ptr::addr_of_mut!(meta_cursor_data) as *mut c_void,
-            },
-            spa_meta {
-                type_: SPA_META_Bitmap,
-                size: std::mem::size_of_val(&meta_bitmap_data) as u32,
-                data: std::ptr::addr_of_mut!(meta_bitmap_data) as *mut c_void,
             },
         ];
         let mut buffer = spa_buffer {
@@ -609,13 +644,13 @@ mod tests {
             datas: std::ptr::null_mut(),
         };
         let buffer_addr = std::ptr::addr_of_mut!(buffer);
-        let extracted_metas = PwMetas::from_raw(&buffer_addr);
+        let extracted_metas = unsafe { PwMetas::from_raw(&buffer_addr) };
         assert_eq!(
             extracted_metas,
             PwMetas {
                 header: Some(&meta_header_data),
                 cursor: Some(&meta_cursor_data),
-                bitmap: Some(&meta_bitmap_data)
+                cursor_bitmap: None
             }
         );
     }
