@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    ffi::CString,
+    ffi::{c_void, CString},
     mem::size_of,
     rc::Rc,
     sync::{
@@ -342,6 +342,7 @@ impl WaylandCaptureStream {
                 ud.cursor_bitmap = metas.cursor_bitmap;
             }
 
+            // Very expensive
             let mut pixel_data = data.data.to_vec();
             'out: {
                 if ud.show_cursor_as_metadata {
@@ -384,7 +385,7 @@ impl WaylandCaptureStream {
                 captured: std::time::Instant::now(),
                 pts: std::time::Duration::from_nanos((header.pts - ud.start_time) as u64),
                 format: ud.format,
-                data: pixel_data,
+                data: pixel_data.as_ptr() as *const c_void,
             };
 
             (*ud.callback)(Ok(StreamEvent::Video(VideoFrame {

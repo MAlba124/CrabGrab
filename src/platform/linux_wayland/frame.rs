@@ -1,3 +1,5 @@
+use std::ffi::c_void;
+
 use pipewire::spa::param::video::VideoInfoRaw;
 
 use crate::prelude::VideoCaptureFrame;
@@ -8,7 +10,7 @@ pub(crate) struct WaylandVideoFrame {
     pub(crate) captured: std::time::Instant,
     pub(crate) pts: std::time::Duration,
     pub(crate) format: VideoInfoRaw,
-    pub(crate) data: Vec<u8>, // TODO: Optimize
+    pub(crate) data: *const c_void,
 }
 
 impl VideoCaptureFrame for WaylandVideoFrame {
