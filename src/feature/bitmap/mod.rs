@@ -532,7 +532,7 @@ impl VideoFrameBitmapInternal for VideoFrame {
         #[cfg(target_os = "linux")]
         {
             match self.impl_video_frame.format.format() {
-                VideoFormat::BGRA => {
+                VideoFormat::BGRA | VideoFormat::BGRx => {
                     let plane_ptr = VideoFramePlanePtr {
                         ptr: self.impl_video_frame.data,
                         width: self.impl_video_frame.size.width as usize,
