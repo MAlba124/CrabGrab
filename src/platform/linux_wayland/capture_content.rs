@@ -130,11 +130,13 @@ impl WaylandCapturableContent {
             .await
             .map_err(|e| CapturableContentError::Other(e.to_string()))?;
 
-        let cursor_as_metadata = screencast
-            .available_cursor_modes()
-            .await
-            .map_err(|e| CapturableContentError::Other(e.to_string()))?
-            .contains(CursorMode::Metadata);
+        // TODO: Fix dual cursor in kwin when capture monitor and cursor as metadata
+        // let cursor_as_metadata = screencast
+        //     .available_cursor_modes()
+        //     .await
+        //     .map_err(|e| CapturableContentError::Other(e.to_string()))?
+        //     .contains(CursorMode::Metadata);
+        let cursor_as_metadata = false;
 
         let source_types = Self::source_types_filter(filter)
             // Some portal implementations freak out when we include supported an not supported source types

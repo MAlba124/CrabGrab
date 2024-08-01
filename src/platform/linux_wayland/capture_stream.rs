@@ -173,8 +173,6 @@ impl WaylandCaptureStream {
             VideoFormat::BGRA, // Big-endian
             VideoFormat::RGBA, // Big-endian
             VideoFormat::RGBx, // Big-endian
-            VideoFormat::ABGR, // Big-endian
-            VideoFormat::ARGB, // Big-endian
         )
     }
 
@@ -343,38 +341,54 @@ impl WaylandCaptureStream {
             }
 
             // Very expensive
-            let mut pixel_data = data.data.to_vec();
-            'out: {
-                if ud.show_cursor_as_metadata {
-                    if let (Some(cursor), Some(bitmap)) = (metas.cursor, ud.cursor_bitmap.as_ref())
-                    {
-                        if bitmap.format == ud.format.format() {
-                            // TODO: conversion
-                            break 'out;
-                        }
+            // let mut pixel_data = data.data.to_vec();
+            // 'out: {
+            //     if ud.show_cursor_as_metadata {
+            //         if let (Some(cursor), Some(bitmap)) = (metas.cursor, ud.cursor_bitmap.as_ref())
+            //         {
+            //             if cursor.position.y < 0
+            //                 || cursor.position.x < 0
+            //                 || bitmap.format == ud.format.format() {
+            //                 break 'out;
+            //             }
 
-                        let mut bmap_iter = bitmap.data.iter();
-                        // TODO: Accelerate this
-                        for h in cursor.position.y as u32
-                            ..std::cmp::min(
-                                cursor.position.y as u32 + bitmap.height,
-                                ud.format.size().height,
-                            )
-                        {
-                            for w in cursor.position.x as usize
-                                ..std::cmp::min(
-                                    cursor.position.x as usize + bitmap.width as usize,
-                                    ud.format.size().width as usize,
-                                )
-                            {
-                                for i in 0..bitmap.bytes_per_pixel {
-                                    pixel_data[h as usize * w + i] = *bmap_iter.next().unwrap();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            //             TODO: Use cursor.hotspot
+            //             let mut bmap_iter = bitmap.data.iter();
+            //             let mut h = cursor.position.y as usize;
+            //             let mut height_max = std::cmp::min(
+            //                 cursor.position.y as usize + bitmap.height as usize,
+            //                 ud.format.size().height as usize,
+            //             );
+            //             let mut width_max = std::cmp::min(
+            //                 cursor.position.x as usize + bitmap.width as usize,
+            //                 ud.format.size().width as usize,
+            //             );
+            //             let stride = 4 * ud.format.size().width as usize;
+            //             while h < height_max {
+            //                 let mut w = cursor.position.x as usize;
+            //                 while w < width_max {
+            //                     if bitmap.bytes_per_pixel != 4 {
+            //                         continue;
+            //                     }
+            //                     let pix_index = h as usize * stride + w as usize * 4;
+            //                     let b = *bmap_iter.next().unwrap();
+            //                     let g = *bmap_iter.next().unwrap();
+            //                     let r = *bmap_iter.next().unwrap();
+            //                     let a = *bmap_iter.next().unwrap();
+            //                     if a > 0 {
+            //                         pixel_data[pix_index + 0] = b;
+            //                         pixel_data[pix_index + 1] = g;
+            //                         pixel_data[pix_index + 2] = r;
+            //                         pixel_data[pix_index + 3] = a;
+            //                     }
+            //                     w += 1;
+            //                 }
+
+            //                 h += 1;
+            //             }
+            //         }
+            //     }
+            // }
 
             let frame = WaylandVideoFrame {
                 size: crate::prelude::Size {
@@ -385,7 +399,7 @@ impl WaylandCaptureStream {
                 captured: std::time::Instant::now(),
                 pts: std::time::Duration::from_nanos((header.pts - ud.start_time) as u64),
                 format: ud.format,
-                data: pixel_data.as_ptr() as *const c_void,
+                data: data.data.as_ptr() as *const c_void,
             };
 
             (*ud.callback)(Ok(StreamEvent::Video(VideoFrame {
@@ -454,6 +468,7 @@ impl WaylandCaptureStream {
             .register()
             .map_err(|e| StreamCreateError::Other(e.to_string()))?;
 
+        // TODO: Accept DMA buffers
         let stream_param_obj = pod::object!(
             spa::utils::SpaTypes::ObjectParamFormat,
             param::ParamType::EnumFormat,
